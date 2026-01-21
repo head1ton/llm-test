@@ -1674,8 +1674,10 @@ dependencies = [
     { name = "mcp" },
     { name = "onnxruntime" },
     { name = "openai" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "tiktoken" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -1691,8 +1693,10 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.25.0" },
     { name = "onnxruntime", specifier = "<1.23.0" },
     { name = "openai", specifier = ">=2.15.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "tiktoken", specifier = ">=0.12.0" },
+    { name = "uvicorn", specifier = ">=0.40.0" },
 ]
 
 [[package]]

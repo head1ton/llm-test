@@ -3,8 +3,11 @@ import os
 from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.chat_models import init_chat_model
+from dotenv import find_dotenv, load_dotenv
 
-# os.environ["GOOGLE_API_KEY"] = "key"
+dotenv_path = find_dotenv()
+load_dotenv(dotenv_path, override=True)
+
 model = init_chat_model("google_genai:gemini-2.5-flash-lite")
 
 async def main():

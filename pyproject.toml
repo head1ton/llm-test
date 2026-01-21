@@ -1,0 +1,24 @@
+[project]
+name = "llm-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb>=1.4.1",
+    "fastmcp>=2.14.3",
+    "langchain[google-genai]>=1.2.6",
+    "langchain-community>=0.4.1",
+    "langchain-core>=1.2.7",
+    "langchain-google-genai>=4.2.0",
+    "langchain-mcp-adapters>=0.2.1",
+    "langchain-openai>=1.1.7",
+    "mcp>=1.25.0",
+    "onnxruntime<1.23.0",
+    "openai>=2.15.0",
+    "tiktoken>=0.12.0",
+    "python-dotenv>=1.2.1",
+]
+
+[tool.uv]
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'x86_64'"]

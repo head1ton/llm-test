@@ -25,6 +25,8 @@ app = FastAPI(title="LLM Agent Server (LangGraph + MCP)")
 
 graph_app = build_graph()
 
+QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 빼자)
+
 # 전역으로 1번만 생성
 mcp_client_stream = MultiServerMCPClient(
     {
@@ -120,18 +122,67 @@ async def chat_stream(req: ChatRequest, request: Request):
     async def sse(data: dict):
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    # 큐/동시성 제어
-    try:
-        await asyncio.wait_for(GLOBAL_SEM.acquire(), timeout=QUEUE_TIMEOUT_SEC)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=429, detail="Server busy (queue timeout)")
+    async def acquire_with_queue_events():
+        """
+        세마포어 즉시 획득 시 queued 없이 진행.
+        아니면 queued 이벤트를 보내고 QUEUE_TIMEOUT_SEC 동안 대기
+        """
+        # 1) 즉시 획득 시도
+        try:
+            GLOBAL_SEM.acquire_nowait()
+            return {"queued": False, "waited_ms": 0}
+        except Exception:
+            pass
+
+        # 2) queued 상태
+        start = asyncio.get_event_loop().time()
+        waited_ms = 0
+        return {"queued": True, "start": start, "waited_ms": waited_ms}
 
     async def event_gen():
         final_evt = None
+        acquired = False
 
         try:
             # 시작 이벤트를 먼저 보내면 UX가 좋아짐
             yield await sse({"type": "start", "request_id": rid})
+
+            qstate = await acquire_with_queue_events()
+
+            if not qstate["queued"]:
+                acquired = True
+                yield await sse({"type": "dequeued", "request_id": rid, "waited_ms": 0})
+            else:
+                # queued 이벤트 먼저 발행
+                yield await sse({"type": "queued", "request_id": rid})
+                # queued heartbeat + acquire 대기
+                start = qstate["start"]
+                last_ping = start
+
+                while True:
+                    if await request.is_disconnected():
+                        yield await sse({"type": "cancelled", "request_id": rid, "reason": "client_disconnected_in_queue"})
+                        return
+
+                    now = asyncio.get_event_loop().time()
+                    waited = now - start
+                    if waited >= QUEUE_TIMEOUT_SEC:
+                        yield await sse({"type": "error", "request_id": rid, "message": "Server busy (queue timeout)"})
+                        return
+
+                    # 주기적으로 queued_ping 전송 (프론트 UX용)
+                    if (now - last_ping) >= QUEUE_PING_SEC:
+                        yield await sse({"type": "queued_ping", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        last_ping = now
+
+                    # 짧게 acquire 시도
+                    try:
+                        await asyncio.wait_for(GLOBAL_SEM.acquire(), timeout=0.2)
+                        acquired = True
+                        yield await sse({"type": "dequeued", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        break
+                    except asyncio.TimeoutError:
+                        continue
 
             async for evt in run_agent_events(
                 request_id=rid,
@@ -141,6 +192,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             ):
                 # latency는 final 이벤트에서 같이 넣고 싶으면 여기서 주입
                 if evt.get("type") == "final":
+                    final_evt = evt
                     evt["latency_ms"] = timer.ms()
 
                 yield await sse(evt)
@@ -151,7 +203,8 @@ async def chat_stream(req: ChatRequest, request: Request):
 
         finally:
             # 반드시 release (클라이언트 중단/예외 발생해도)
-            GLOBAL_SEM.release()
+            if acquired:
+                GLOBAL_SEM.release()
 
             # 스트리밍도 운영 로그.
             if final_evt:

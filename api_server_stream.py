@@ -5,7 +5,7 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from starlette.requests import Request
+# from starlette.requests import Request
 import sys
 import os
 
@@ -17,8 +17,10 @@ from schemas import ChatRequest, ChatResponse
 from graph_mcp_workflow import mcp_messages_to_chat, router_prompt, router_llm
 import asyncio
 from utils_obs import Timer, ensure_request_id
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from dotenv import load_dotenv
+
+from trace_store import TRACE_STORE
 
 load_dotenv()
 
@@ -87,6 +89,9 @@ async def chat_stream(req: ChatRequest, request: Request):
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     async def event_gen():
+        TRACE_STORE.start(rid)
+        TRACE_STORE.add(rid, "start")
+
         try:
             yield await sse({"type": "start", "request_id": rid})
 
@@ -131,7 +136,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             # 4) MCP Tools -> LangChain Tools
             tools = await mcp_client_stream.get_tools()
             yield await sse({"type": "stage", "request_id": rid, "stage": "tools_loaded", "count": len(tools)})
-
+            # print('=== tools ===', tools)
             # 5) Streaming 가능한 모델 (usage도 받고 싶으면 stream_usage=True)
             # OpenAI 스트리밍 usage는 기본으로 오지않으므로 stream_usage=True가 필요: contentReference[oaicite:5]{index=5}
             # llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True, stream_usage=True)
@@ -182,6 +187,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 # - ToolMessage: tool 실행 결과
                 # - AIMessageChunk: token/usage_metadata 포함 가능
 
+                # print(update)
                 try:
                     # 가장 흔한 : {"messages": [...]} 형태로 들어오는 업데이트
                     msgs = update.get("messages") if isinstance(update, dict) else None
@@ -190,12 +196,26 @@ async def chat_stream(req: ChatRequest, request: Request):
                             # tool call 감지
                             tool_calls = getattr(m, "tool_calls", None) or getattr(m, "additional_kwargs", {}).get("tool_calls")
                             if tool_calls:
+                                # tool 이름만 추출
+                                names = []
+                                for tc in tool_calls:
+                                    # OpenAI tool call dict 형태
+                                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                                    nm = fn.get("name")
+                                    if nm:
+                                        names.append(nm)
+
+                                TRACE_STORE.add(rid, "tool_call", tool_calls=tool_calls, tool_names=names)
+
                                 yield await sse({"type": "tool_call", "request_id": rid, "tool_calls": tool_calls})
                                 continue
 
                             # tool result 감지 (ToolMessage)
                             m_type = getattr(m, "type", None) or getattr(m, "__class__", type("x", (object,), {})).__name__
                             if "ToolMessage" in str(m_type):
+                                content = getattr(m, "content", "")
+                                TRACE_STORE.add(rid, "tool_result", content=content[:2000]) # 너무 길면 자르기
+
                                 yield await sse({"type": "tool_result", "request_id": rid, "content": getattr(m, "content", "")})
                                 continue
 
@@ -219,11 +239,26 @@ async def chat_stream(req: ChatRequest, request: Request):
                     yield await sse({"type": "debug_error", "request_id": rid, "message": str(inner)})
 
             final_answer = "".join(final_text_parts).strip()
+
+            trace = TRACE_STORE.get(rid)
+            used = []
+            if trace:
+                for ev in trace.events:
+                    if ev.type == "tool_call":
+                        used.extend(ev.data.get("tool_names", []))
+
+            # 중복 제거 (순서 유지)
+            seen = set()
+            used_tools = [x for x in used if not (x in seen or seen.add(x))]
+
+            TRACE_STORE.add(rid, "final", used_tools=used_tools)
+
             yield await sse({
                 "type": "final",
                 "request_id": rid,
                 "answer": final_answer,
                 "topic": route,
+                "used_tools": used_tools,
                 "usage": usage,
                 "latency_ms": timer.ms(),
             })
@@ -234,4 +269,15 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-
+@app.get("/trace/{request_id}")
+def get_trace(request_id: str):
+    tr = TRACE_STORE.get(request_id)
+    if not tr:
+        return {"request_id": request_id, "events": []}
+    return {
+        "request_id": request_id,
+        "events": [
+            {"ts": e.ts, "type": e.type, "data": e.data}
+            for e in tr.events
+        ]
+    }

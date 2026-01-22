@@ -112,7 +112,7 @@ async def chat_stream(req: ChatRequest):
 
             # 6) 스트리밍 가능한 LLM로 최종 답변 생성
             #       (툴 루프(create_agent)는 스트리밍/이벤트 전달이 복잡해서 여기서는 제외)
-            llm_stream = ChatGoogleGenerativeAI(model="gemini-2.5-flash", streaming=True)
+            llm_stream = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", streaming=True)
             # llm_stream = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
 
             answer_prompt = ChatPromptTemplate.from_messages([

@@ -24,7 +24,7 @@ mcp_client = MultiServerMCPClient(
     }
 )
 
-router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
 answer_llm_name = "google_genai:gemini-2.5-flash-lite"
 
 # State 정의

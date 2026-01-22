@@ -1,4 +1,1 @@
-{"id":"mcp_basic","input":"MCP가 뭐야? 쉽게 설명해줘","must_include":["표준","도구","프로토콜"],"must_not_include":[],"min_bullets":2}
-{"id":"rag_vs_ft","input":"RAG가 뭐고 왜 Fine-tuning보다 실무에서 많이 쓰여?","must_include":["검색","컨텍스트","환각"],"must_not_include":[],"min_bullets":2}
-{"id":"agent_basic","input":"Agent가 뭐고 RAG랑 뭐가 달라?","must_include":["도구","실행","루프"],"must_not_include":[],"min_bullets":2}
-{"id":"ambiguous","input":"이거 어떻게 해야 해?","must_include":["RAG","Agent","MCP"],"must_not_include":[],"min_bullets":0}
+{"id":"mcp_requires_tool","input":"MCP가 뭐야? 내부 문서를 읽어서 설명해줘","must_include":["표준","프로토콜"],"min_bullets":2,"must_use_tools":["read_doc"]}

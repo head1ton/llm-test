@@ -41,6 +41,15 @@ def test_chat_regression(case):
     answer = data["answer"]
     assert isinstance(answer, str) and answer.strip()
 
+    must_use = case.get("must_use_tools", [])
+    if must_use:
+        used = data.get("used_tools") or []
+        for t in must_use:
+            assert t in used, (
+                f"[{case['id']}] expected tool {t} not used. "
+                f"used_tools={used}"
+            )
+
     # 1) 룰 기반 평가 (빠르고 안정적)
     res = eval_answer_rules(answer, case)
     assert res.ok, f"[{case['id']}] score={res.score} reason={res.reasons}\nanswer=\n{answer}\n"

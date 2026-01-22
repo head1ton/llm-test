@@ -25,7 +25,7 @@ mcp_client = MultiServerMCPClient(
 )
 
 router_llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
-answer_llm_name = "google_genai:gemini-2.5-flash-lite"
+answer_llm_name = "google_genai:gemini-2.5-flash"
 
 # State 정의
 class GraphState(TypedDict, total=False):
@@ -33,6 +33,8 @@ class GraphState(TypedDict, total=False):
     topic: Literal["rag", "agent", "mcp", "clarify"]
     prompt_messages: List[dict]
     resource_text: str
+    resource_uri: str
+    used_tools: List[str]
     answer: str
 
 # MCP prompt 메시지 -> LangChain 메시지(dict) 변환
@@ -80,16 +82,16 @@ async def load_prompt_node(state: GraphState) -> GraphState:
 async def load_resource_node(state: GraphState) -> GraphState:
     topic = state["topic"]
     if topic == "clarify":
-        return {"resource_text": ""}
+        return {"resource_text": "", "resource_uri": ""}
 
     uri = f"docs://{topic}"
     blobs = await mcp_client.get_resources("docs", uris=[uri])
     if not blobs:
-        return {"resource_text": "NO_RESOURCE"}
+        return {"resource_text": "NO_RESOURCE", "resource_uri": uri}
 
     blob = blobs[0]
     text = blob.as_string() if hasattr(blob, "as_string") else str(blob)
-    return {"resource_text": text}
+    return {"resource_text": text, "resource_uri": uri}
 
 # 4) Answer Node
 async def answer_node(state: GraphState) -> GraphState:
@@ -97,9 +99,10 @@ async def answer_node(state: GraphState) -> GraphState:
     user_q = state["messages"][-1]["content"]
 
     if topic == "clarify":
-        return {"answer": "질문을 정확히 잡기 위해 한 가지만 물어볼께. RAG, Agent, MCP 중 어떤 주제를 설명해줄까?"}
+        return {"answer": "질문을 정확히 잡기 위해 한 가지만 물어볼께. RAG, Agent, MCP 중 어떤 주제를 설명해줄까?", "used_tools": []}
 
     tools = await mcp_client.get_tools()
+    tool_names = [t.name for t in tools]
 
     agent = create_agent(
         model,
@@ -129,7 +132,7 @@ async def answer_node(state: GraphState) -> GraphState:
 
     res = await agent.ainvoke({"messages": messages})
     final = res["messages"][-1].content
-    return {"answer": final}
+    return {"answer": final, "used_tools": tool_names}
 
 # Graph
 def build_graph():

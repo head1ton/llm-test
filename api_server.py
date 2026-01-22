@@ -39,13 +39,20 @@ async def chat(req: ChatRequest):
         latency = timer.ms()
         topic = out.get("topic")
 
-        print(f"[chat] request_id={rid} latency_ms={latency} topic={topic}")
+        resource_uri = out.get("resource_uri")
+        resource_text = out.get("resource_text")
+        used_tools = out.get("used_tools")
+
+        print(f"[chat] request_id={rid} latency_ms={latency} topic={topic} resource_uri={resource_uri} resource_text={resource_text} used_tools={used_tools}")
 
         return ChatResponse(
             request_id=rid,
             answer=answer,
             topic=topic,
             latency_ms=latency,
+            resource_uri=resource_uri,
+            resource_text=resource_text,
+            used_tools=used_tools,
         )
 
     except Exception as e:

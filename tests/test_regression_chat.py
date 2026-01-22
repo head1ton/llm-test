@@ -50,12 +50,13 @@ def test_chat_regression(case):
         # 내부 리소스는 현재 서버가 docs://{topic} 기반이라면 topic을 이용해 넣을 수 있는데,
         # 여기서는 최소 구현으로 resource를 빈 값으로 두고 평가(정확성/형식 중심)부터 시작.
         question = case["input"]
-        resource = "" # or "NO_RESOURCE"
+        resource = data.get("resource_text") or ""
         judge, _usage = judge_answer(question, resource, answer)
 
         # 게이트 기준
         min_overall = int(os.getenv("JUDGE_MIN_OVERALL", "3"))
         min_accuracy = int(os.getenv("JUDGE_MIN_ACCURACY", "3"))
+        min_grounding = int(os.getenv("JUDGE_MIN_GROUNDING", "3"))
 
         assert judge.overall >= min_overall, (
             f"[{case['id']}] JUDGE FAIL overall={judge.overall} < {min_overall}\n"
@@ -66,6 +67,12 @@ def test_chat_regression(case):
         assert judge.accuracy >= min_accuracy, (
             f"[{case['id']}] JUDGE FAIL accuracy={judge.accuracy} < {min_accuracy}\n"
             f"reasons={judge.reasons}\nanswer=\n{answer}\n"
+        )
+
+        assert judge.grounding >= min_grounding, (
+            f"[{case['id']}] JUDGE FAIL grounding={judge.grounding} < {min_grounding}\n"
+            f"reasons={judge.reasons}\nanswer=\n{answer}\n"
+            f"resource=\n{resource}\n"
         )
 
 

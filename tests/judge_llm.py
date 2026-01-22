@@ -27,6 +27,7 @@ judge_prompt = ChatPromptTemplate.from_messages([
      "Score each criterion from 0 to 5.\n"
      "Be consistent. If the answer contains hallucinations not supported by the resource. lower accuracy and grounding.\n"
      "If the question is ambiguous and the assistant asks a clarifying question, that can be correct.\n"
+     "If the assistant states facts not present in the resource, treat it as hallucination and set grounding <= 2"
      "Return JSON matching the schema strictly."
      ),
     ("user",

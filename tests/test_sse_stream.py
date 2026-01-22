@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from api_server_stream import app
+from api_server import app
 
 def test_sse_stream_has_final():
     client = TestClient(app)

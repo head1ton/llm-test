@@ -9,7 +9,7 @@ from judge_llm import judge_answer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from api_server_stream import app
+from api_server import app
 from eval_rules import eval_answer_rules
 
 def load_cases(path="tests/golden_cases.jsonl"):

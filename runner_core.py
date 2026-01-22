@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 
 from graph_mcp_workflow import mcp_messages_to_chat, router_prompt, router_llm
 from trace_store import TRACE_STORE
+from resilience import with_timeout, mcp_retry, MCP_TIMEOUT_SEC
 
 def _extract_tool_names(tool_calls: Any) -> List[str]:
     names: List[str] = []
@@ -57,19 +58,34 @@ async def run_agent_events(
         yield {"type": "done", "request_id": request_id}
         return
 
+    @mcp_retry()
+    async def _load_prompt():
+        return await with_timeout(
+            mcp_client.get_prompt(
+                "docs",
+                "explain_concept",
+                arguments={"topic": route.upper(), "audience": "beginner"},
+            ),
+            MCP_TIMEOUT_SEC,
+        )
+
     # 2) MCP Prompt
-    prompt_msgs = await mcp_client.get_prompt(
-        "docs",
-        "explain_concept",
-        arguments={"topic": route.upper(), "audience": "beginner"}
-    )
+    prompt_msgs = await _load_prompt()
+
     base_messages = mcp_messages_to_chat(prompt_msgs)
     TRACE_STORE.add(request_id, "stage", stage="prompt_loaded")
     yield {"type": "stage", "request_id": request_id, "stage": "prompt_loaded"}
 
+    @mcp_retry()
+    async def _load_resource():
+        return await with_timeout(
+            mcp_client.get_resources("docs", uris=[uri]),
+            MCP_TIMEOUT_SEC,
+        )
+
     # 3) MCP Resource
     uri = f"docs://{route}"
-    blobs = await mcp_client.get_resources("docs", uris=[uri])
+    blobs = await _load_resource()
     if not blobs:
         resource_text = "NO_RESOURCE"
     else:
@@ -80,8 +96,13 @@ async def run_agent_events(
     TRACE_STORE.add(request_id, "resource", uri=uri, text=resource_text[:4000])
     yield {"type": "stage", "request_idi": request_id, "stage": "resource_loaded", "uri": uri}
 
+    @mcp_retry()
+    async def _load_tools():
+        return await with_timeout(mcp_client.get_tools(), MCP_TIMEOUT_SEC)
+
     # 4) MCP Tools 로드
-    tools = await mcp_client.get_tools()
+    tools = await _load_tools()
+
     TRACE_STORE.add(request_id, "stage", stage="tools_loaded", count=len(tools))
     yield {"type": "stage", "request_id": request_id, "stage": "tools_loaded", "count": len(tools)}
 

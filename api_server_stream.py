@@ -9,14 +9,14 @@ from starlette.requests import Request
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcp_langchain.graph_mcp_workflow import build_graph
+from graph_mcp_workflow import build_graph
 
-from mcp_langchain.schemas import ChatRequest, ChatResponse
-from mcp_langchain.graph_mcp_workflow import mcp_messages_to_chat, router_prompt, router_llm
+from schemas import ChatRequest, ChatResponse
+from graph_mcp_workflow import mcp_messages_to_chat, router_prompt, router_llm
 import asyncio
-from mcp_langchain.utils_obs import Timer, ensure_request_id
+from utils_obs import Timer, ensure_request_id
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 
@@ -126,7 +126,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             # 5) Streaming 가능한 모델 (usage도 받고 싶으면 stream_usage=True)
             # OpenAI 스트리밍 usage는 기본으로 오지않으므로 stream_usage=True가 필요: contentReference[oaicite:5]{index=5}
             # llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True, stream_usage=True)
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", streaming=True)
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", streaming=True)
 
             agent = create_agent(
                 llm,

@@ -1,15 +1,14 @@
 import json
 import os
 import sys
+import time
 import pytest
 from fastapi.testclient import TestClient
 
-root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(root_dir)
-sys.path.append(os.path.join(root_dir, "mcp_langchain"))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcp_langchain.api_server_stream import app
-from tests.eval_rules import eval_answer_rules
+from api_server_stream import app
+from eval_rules import eval_answer_rules
 
 def load_cases(path="tests/golden_cases.jsonl"):
     cases = []
@@ -22,6 +21,8 @@ def load_cases(path="tests/golden_cases.jsonl"):
 
 @pytest.mark.parametrize("case", load_cases())
 def test_chat_regression(case):
+    # time.sleep(10)
+
     client = TestClient(app)
 
     payload = {

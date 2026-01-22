@@ -1,14 +1,11 @@
 import json
 import os
 import sys
-import pytest
 from fastapi.testclient import TestClient
 
-root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(root_dir)
-sys.path.append(os.path.join(root_dir, "mcp_langchain"))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcp_langchain.api_server_stream import app
+from api_server_stream import app
 
 def test_sse_stream_has_final():
     client = TestClient(app)
@@ -36,4 +33,3 @@ def test_sse_stream_has_final():
                 break
 
         assert got_final, "No final event received"
-

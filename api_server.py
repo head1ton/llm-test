@@ -2,12 +2,14 @@ import json
 import asyncio
 import os
 import traceback
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from global_limit import GLOBAL_LIMITER
 from graph_mcp_workflow import build_graph
 from runner_core import run_agent_events
 from schemas import ChatRequest, ChatResponse
@@ -23,11 +25,21 @@ from obs_log import log, estimate_cost_usd
 
 load_dotenv()
 
-app = FastAPI(title="LLM Agent Server (LangGraph + MCP)")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await GLOBAL_LIMITER.init_once()
+    yield
+    # Shutdown (필요 시 여기에 정리 코드 추가)
+
+app = FastAPI(title="LLM Agent Server (LangGraph + MCP)", lifespan=lifespan)
 
 graph_app = build_graph()
 
 QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 빼자)
+
+GLOBAL_QUEUE_TIMEOUT = float(os.getenv("QUEUE_TIMEOUT_SEC", "10"))
 
 MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
 
@@ -91,15 +103,21 @@ async def chat(req: ChatRequest):
     if not req.messages:
         raise HTTPException(status_code=400, detail="messages is empty")
 
-    # 큐/동시성 제어
+    user_q = req.messages[-1].content
+
+    # 글로벌 토큰 획득 (workers 전체 기준)
+    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=GLOBAL_QUEUE_TIMEOUT)
+    if not global_token:
+        raise HTTPException(status_code=429, detail="Server busy (global queue timeout)")
+
+    # 큐/동시성 제어(프로세스 로컬 세마포어)
     try:
         await asyncio.wait_for(GLOBAL_SEM.acquire(), timeout=QUEUE_TIMEOUT_SEC)
     except asyncio.TimeoutError:
+        await GLOBAL_LIMITER.release(global_token)
         raise HTTPException(status_code=429, detail="Server busy (queue timeout)")
 
     try:
-        user_q = req.messages[-1].content
-
         # /chat도 동일 엔진으로 이벤트를 '수집'해서 최종 결과 생성
         final_evt = None
         async for evt in run_agent_events(
@@ -148,6 +166,7 @@ async def chat(req: ChatRequest):
         )
     finally:
         GLOBAL_SEM.release()
+        await GLOBAL_LIMITER.release(global_token)
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
@@ -181,12 +200,49 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     async def event_gen():
         final_evt = None
+        global_token = None
         acquired = False
 
         try:
             # 시작 이벤트를 먼저 보내면 UX가 좋아짐
             yield await sse({"type": "start", "request_id": rid})
 
+            # global limiter (redis)
+            start = asyncio.get_event_loop().time()
+            global_token = await GLOBAL_LIMITER.acquire(timeout_sec=0.0)
+
+            if global_token:
+                yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": 0})
+            else:
+                yield await sse({"type": "queued_global", "request_id": rid})
+                last_ping = start
+
+                while True:
+                    if await request.is_disconnected():
+                        yield await sse({
+                            "type": "cancelled",
+                            "request_id": rid,
+                            "reason": "client_disconnected_in_global_queue"
+                        })
+                        return
+
+                    now = asyncio.get_event_loop().time()
+                    waited = now - start
+
+                    if waited >= QUEUE_TIMEOUT_SEC:
+                        yield await sse({"type": "error", "request_id": rid, "message": "Server busy (global queue timeout)"})
+                        return
+
+                    if (now - last_ping) >= QUEUE_PING_SEC:
+                        yield await sse({"type": "queued_ping_global", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        last_ping = now
+
+                    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=0.2)
+                    if global_token:
+                        yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        break
+
+            # 큐/동시성 제어(프로세스 로컬 세마포어)
             qstate = await acquire_with_queue_events()
 
             if not qstate["queued"]:
@@ -224,6 +280,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     except asyncio.TimeoutError:
                         continue
 
+            # 실제 Agent 실행
             async for evt in run_agent_events(
                 request_id=rid,
                 user_q=user_q,
@@ -245,6 +302,8 @@ async def chat_stream(req: ChatRequest, request: Request):
             # 반드시 release (클라이언트 중단/예외 발생해도)
             if acquired:
                 GLOBAL_SEM.release()
+            if global_token:
+                await GLOBAL_LIMITER.release(global_token)
 
             # 스트리밍도 운영 로그.
             if final_evt:

@@ -1,4 +1,10 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   mcp_docs:
     build: .
     command: ["uv", "run", "python", "mcp_server_docs.py"]
@@ -23,6 +29,9 @@ services:
       - RETRY_MAX_ATTEMPTS=2
       - RETRY_BASE_WAIT_SEC=0.5
       - LOG_JSON=1
+      - REDIS_URL=redis://redis:6379/0
+      - GLOBAL_MAX_CONCURRENCY=20
+      - GLOBAL_LEASE_SEC=60
     ports:
       - "8000:8000"
     depends_on:

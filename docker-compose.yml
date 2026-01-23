@@ -1,11 +1,21 @@
 services:
+  mcp_docs:
+    build: .
+    command: ["uv", "run", "python", "mcp_server_docs.py"]
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=9000
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+
   api:
     build: .
-    ports:
-      - "8000:8000"
+    command: ["uv", "run", "uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - MCP_URL=http://mcp-docs:9000/mcp
       - MAX_CONCURRENCY=4
       - QUEUE_TIMEOUT_SEC=10
       - LLM_TIMEOUT_SEC=40
@@ -13,4 +23,8 @@ services:
       - RETRY_MAX_ATTEMPTS=2
       - RETRY_BASE_WAIT_SEC=0.5
       - LOG_JSON=1
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mcp-docs
     restart: unless-stopped

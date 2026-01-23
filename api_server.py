@@ -1,5 +1,7 @@
 import json
 import asyncio
+import os
+import traceback
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -27,13 +29,16 @@ graph_app = build_graph()
 
 QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 빼자)
 
+MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
+
 # 전역으로 1번만 생성
 mcp_client_stream = MultiServerMCPClient(
     {
         "docs": {
-            "transport": "stdio",
-            "command": "python",
-            "args": ["mcp_server_docs.py"],
+            "transport": "http",
+            "url": MCP_URL,
+            # 인증/추적 헤더가 필요하면 headers 추가 가능
+            # "headers": {"Authorization": "Bearer ..."}
         }
     }
 )
@@ -42,15 +47,41 @@ mcp_client_stream = MultiServerMCPClient(
 def health():
     return {"ok": True}
 
-@app.get("readiness")
+@app.get("/readiness")
 async def readiness():
+    # return {"ok": True, "note": "readiness endpoint is live"}
+    # try:
+    #     # MCP 서버가 응답하는지 확인
+    #     blobs = await mcp_client_stream.get_resources("docs", uris=["docs://mcp"])
+    #     ok = bool(blobs)
+    #     return {"ok": ok}
+    # except Exception as e:
+    #     return {"ok": False, "error": str(e)}
+
     try:
-        # MCP 서버가 응답하는지 확인
-        blobs = await mcp_client_stream.get_resources("docs", uris=["docs://mcp"])
-        ok = bool(blobs)
-        return {"ok": ok}
+        tools = await mcp_client_stream.get_tools()
+        return {"ok": True, "mcp_transport": "http", "tools": [t.name for t in tools]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Python 3.11+ : ExceptionGroup(=BaseExceptionGroup) 펼치기
+        details = {
+            "type": type(e).__name__,
+            "message": str(e),
+        }
+
+        # ExceptionGroup이면 하위 예외들을 모두 뽑아 보여줌
+        if hasattr(e, "exceptions"):
+            subs = []
+            for sub in e.exceptions:
+                subs.append({
+                    "type": type(sub).__name__,
+                    "message": str(sub),
+                    "traceback": "".join(traceback.format_exception(type(sub), sub, sub.__traceback__))[-2000:],
+                })
+            details["sub_exceptions"] = subs
+        else:
+            details["traceback"] = "".join(traceback.format_exception(type(e), e, e.__traceback__))[-2000:]
+
+        return {"ok": False, "mcp_transport": "http", "error": details}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):

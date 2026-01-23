@@ -1,13 +1,10 @@
+import os
+
 from fastmcp import FastMCP
 
 mcp = FastMCP(
     name="DocsServer",
-    instructions=(
-        "This server exposes internal docs via tools/resources/prompts.\n"
-        "- Use tool: read_doc(keyword)\n"
-        "- Use resource URIs: docs://{keyword}\n"
-        "- Use prompt: explain_concept(topic, audience)\n"
-    ),
+    instructions="Provides tools/resources/prompts for docs."
 )
 
 DOCS = {
@@ -49,4 +46,7 @@ def explain_concept(topic: str, audience: str = "beginner") -> str:
     )
 
 if __name__ == '__main__':
-    mcp.run()
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("MCP_PORT", "9000"))
+
+    mcp.run(transport="http", host=host, port=port)

@@ -32,6 +32,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - GLOBAL_MAX_CONCURRENCY=20
       - GLOBAL_LEASE_SEC=60
+      - GLOBAL_LEASE_RENEW_SEC=20.0
     ports:
       - "8000:8000"
     depends_on:

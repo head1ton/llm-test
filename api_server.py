@@ -41,6 +41,8 @@ QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 �
 
 GLOBAL_QUEUE_TIMEOUT = float(os.getenv("QUEUE_TIMEOUT_SEC", "10"))
 
+GLOBAL_LEASE_RENEW_SEC = float(os.getenv("GLOBAL_LEASE_RENEW_SEC", "20.0")) # lease_sec의 1/3~1/5 권장
+
 MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
 
 # 전역으로 1번만 생성
@@ -106,7 +108,7 @@ async def chat(req: ChatRequest):
     user_q = req.messages[-1].content
 
     # 글로벌 토큰 획득 (workers 전체 기준)
-    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=GLOBAL_QUEUE_TIMEOUT)
+    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=GLOBAL_QUEUE_TIMEOUT, lease_sec=180)
     if not global_token:
         raise HTTPException(status_code=429, detail="Server busy (global queue timeout)")
 
@@ -242,6 +244,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                         yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": int(waited * 1000)})
                         break
 
+            last_renew = asyncio.get_event_loop().time()
+
             # 큐/동시성 제어(프로세스 로컬 세마포어)
             qstate = await acquire_with_queue_events()
 
@@ -287,6 +291,13 @@ async def chat_stream(req: ChatRequest, request: Request):
                 mcp_client=mcp_client_stream,
                 request=request,
             ):
+                # lease 갱신 (스트리밍이 길어질 때 만료 방지)
+                if global_token:
+                    now = asyncio.get_event_loop().time()
+                    if (now - last_renew) >= GLOBAL_LEASE_RENEW_SEC:
+                        await GLOBAL_LIMITER.renew(global_token)
+                        last_renew = now
+
                 # latency는 final 이벤트에서 같이 넣고 싶으면 여기서 주입
                 if evt.get("type") == "final":
                     final_evt = evt

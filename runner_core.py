@@ -201,6 +201,30 @@ async def run_agent_events(
 
     final_answer = "".join(final_parts).strip()
 
+    if usage is None:
+        # 1) Trace에서 usage 이벤트가 있었으면 그걸 사용
+        tr = TRACE_STORE.get(request_id)
+        if tr:
+            for ev in reversed(tr.events):
+                if ev.type == "usage":
+                    usage = ev.data.get("usage")
+                    break
+
+    # 2) 그래도 없으면 tiktoken으로 대략 추정
+    if usage is None:
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("o200k_base")   # 대체로 안전한 기본
+            # input은 user_q + resource_text + prompt_msgs를 대략 합쳐 계산(보수적으로)
+            approx_in_text = user_q + "\n" + resource_text
+            in_tok = len(enc.encode(approx_in_text))
+            out_tok = sum(len(enc.encode(p)) for p in final_parts) if final_parts else 0
+            usage = {"input_tokens": in_tok, "output_tokens": out_tok, "total_tokens": in_tok + out_tok}
+            TRACE_STORE.add(request_id, "usage", usage=usage, source="tiktoken_estimate")
+            yield {"type": "usage", "request_id": request_id, "usage": usage, "source": "tiktoken_estimate"}
+        except Exception:
+            usage = None
+
     TRACE_STORE.add(
         request_id,
         "final",

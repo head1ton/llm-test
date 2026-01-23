@@ -42,6 +42,15 @@ mcp_client_stream = MultiServerMCPClient(
 def health():
     return {"ok": True}
 
+@app.get("readiness")
+async def readiness():
+    try:
+        # MCP 서버가 응답하는지 확인
+        blobs = await mcp_client_stream.get_resources("docs", uris=["docs://mcp"])
+        ok = bool(blobs)
+        return {"ok": ok}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):

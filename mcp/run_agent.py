@@ -1,6 +1,14 @@
 import asyncio
+import os
 from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.chat_models import init_chat_model
+from dotenv import find_dotenv, load_dotenv
+
+dotenv_path = find_dotenv()
+load_dotenv(dotenv_path, override=True)
+
+model = init_chat_model("google_genai:gemini-2.5-flash-lite")
 
 async def main():
     client = MultiServerMCPClient(
@@ -16,21 +24,21 @@ async def main():
     tools = await client.get_tools()
 
     agent = create_agent(
-        "openai:gpt-4o-mini",
+        # "openai:gpt-4o-mini",
+        model,
         tools,
         system_prompt=(
-            "You are a helpful assistant."
-            "When a user asks about RAG/Agent/MCP, call the appropriate MCP tool."
+            "You are a helpful assistant.\n"
+            "When the user asks about RAG/Agent/MCP, call the MCP tool read_doc.\n"
+            "Use the tool output as the primary source.\n"
+            "If tool returns NO_RESULT, ask which topic to read: rag/agent/mcp.\n"
         ),
     )
 
-    result = await agent.ainvoke(
+    res = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "MCP가 뭐야? 내부 문서 기반으로 설명해줘."}]}
     )
-
-    final_msg = result["messages"][-1]
-    print(final_msg.content)
-
+    print(res["messages"][-1].content)
 
 if __name__ == '__main__':
     asyncio.run(main())

@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - MAX_CONCURRENCY=4
+      - QUEUE_TIMEOUT_SEC=10
+      - LLM_TIMEOUT_SEC=40
+      - MCP_TIMEOUT_SEC=10
+      - RETRY_MAX_ATTEMPTS=2
+      - RETRY_BASE_WAIT_SEC=0.5
+      - LOG_JSON=1
+    restart: unless-stopped

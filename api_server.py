@@ -6,6 +6,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
+from pydantic import TypeAdapter
+from sse_events import SSEEvent
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -191,7 +194,13 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     user_q = req.messages[-1].content
 
+    VALIDATE_SSE = os.getenv("VALIDATE_SSE", "0") == "1"
+    SSE_ADAPTER = TypeAdapter(SSEEvent)
+
     async def sse(data: dict):
+        if VALIDATE_SSE:
+            # 스키마 검증: 실패하면 예외 발생
+            SSE_ADAPTER.validate_python(data)
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     async def acquire_with_queue_events():

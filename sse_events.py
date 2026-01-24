@@ -87,9 +87,16 @@ class CancelledEvent(SSEBase):
     type: Literal["cancelled"] = "cancelled"
     reason: Optional[str] = None
 
+class ExperimentEvent(SSEBase):
+    type: Literal["experiment"] = "experiment"
+    variant: str
+    model: str
+    prompt: str
+
 # Union 타입: 서버/테스트에서 검증할 때 사용
 SSEEvent = Union[
     StartEvent,
+    ExperimentEvent,
     QueuedGlobalEvent, QueuedPingGlobalEvent, DequeuedGlobalEvent,
     QueuedLocalEvent, QueuedPingLocalEvent, DequeuedLocalEvent,
     RouteEvent, StageEvent,

@@ -23,6 +23,7 @@ from utils_obs import Timer, ensure_request_id
 from concurrency import GLOBAL_SEM, QUEUE_TIMEOUT_SEC
 from obs_log import log, estimate_cost_usd
 
+from experiments import choose_variant, REGISTRY
 
 # from starlette.requests import Request
 # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,7 +57,13 @@ QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 �
 
 GLOBAL_LEASE_RENEW_SEC = os.getenv("GLOBAL_LEASE_RENEW_SEC", "20.0")
 
+ROLLOUT_V2_PCT = int(os.getenv("ROLLOUT_V2_PCT", "0"))
+
+VALIDATE_SSE = os.getenv("VALIDATE_SSE", "0") == "1"
+
 MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
+
+SSE_ADAPTER = TypeAdapter(SSEEvent)
 
 # 전역으로 1번만 생성
 mcp_client_stream = MultiServerMCPClient(
@@ -110,8 +117,18 @@ async def readiness():
 
         return {"ok": False, "mcp_transport": "http", "error": details}
 
+def _select_variant(request: Request) -> tuple[str, object]:
+    """
+    헤더/롤아웃 비율로 variant 선택.
+    반환: (variant_str, variant_cfg)
+    """
+    explicit = request.headers.get("X-EXP_VARIANT") # v1 or v2
+    variant = choose_variant(explicit, ROLLOUT_V2_PCT)
+    variant_cfg = REGISTRY[variant]
+    return variant, variant_cfg
+
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     rid = ensure_request_id(req.request_id)
     timer = Timer.start()
 
@@ -119,6 +136,8 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="messages is empty")
 
     user_q = req.messages[-1].content
+
+    variant, variant_cfg = _select_variant(request)
 
     # 글로벌 토큰
     global_token = await GLOBAL_LIMITER.acquire(timeout_sec=QUEUE_TIMEOUT_SEC, lease_sec=180)
@@ -141,6 +160,7 @@ async def chat(req: ChatRequest):
             user_q=user_q,
             mcp_client=mcp_client_stream,   # 전역 MCP client(없으면 새로 하나 전역 생성)
             request=None,   # 비스트리밍이니 disconnect 감지 불필요
+            variant_cfg=variant_cfg,
         ):
             if evt.get("type") == "final":
                 final_evt = evt
@@ -165,6 +185,9 @@ async def chat(req: ChatRequest):
             "chat_done",
             request_id=rid,
             latency_ms=latency,
+            variant=variant,
+            model=variant_cfg.model,
+            prompt=variant_cfg.prompt_name,
             topic=final_evt.get("topic"),
             used_tools=final_evt.get("used_tools", []),
             usage=usage,
@@ -179,6 +202,7 @@ async def chat(req: ChatRequest):
             resource_uri=final_evt.get("resource_uri"),
             resource_text=resource_text,
             used_tools=final_evt.get("used_tools", [])
+            # variant=variant,  # schema 확장 시 사용
         )
     finally:
         GLOBAL_SEM.release()
@@ -194,8 +218,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     user_q = req.messages[-1].content
 
-    VALIDATE_SSE = os.getenv("VALIDATE_SSE", "0") == "1"
-    SSE_ADAPTER = TypeAdapter(SSEEvent)
+    variant, variant_cfg = _select_variant(request)
 
     async def sse(data: dict):
         if VALIDATE_SSE:
@@ -223,11 +246,17 @@ async def chat_stream(req: ChatRequest, request: Request):
         try:
             # 시작 이벤트를 먼저 보내면 UX가 좋아짐
             yield await sse({"type": "start", "request_id": rid})
+            yield await sse({
+                "type": "experiment",
+                "request_id": rid,
+                "variant": variant,
+                "model": variant_cfg.model,
+                "prompt": variant_cfg.prompt_name,
+            })
 
             # Global_LIMITER (Redis) 먼저 획득
             start = asyncio.get_event_loop().time()
             global_token = await GLOBAL_LIMITER.acquire(timeout_sec=0.0)
-            last_renew = asyncio.get_event_loop().time()
 
             if global_token:
                 yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": 0})
@@ -292,6 +321,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
                     now = asyncio.get_event_loop().time()
                     waited = now - start
+
                     if waited >= QUEUE_TIMEOUT_SEC:
                         yield await sse({"type": "error", "request_id": rid, "message": "Server busy (local queue timeout)"})
                         return
@@ -311,11 +341,14 @@ async def chat_stream(req: ChatRequest, request: Request):
                         continue
 
             # agent 실행
+            last_renew = asyncio.get_event_loop().time()
+
             async for evt in run_agent_events(
                 request_id=rid,
                 user_q=user_q,
                 mcp_client=mcp_client_stream,
                 request=request,
+                variant_cfg=variant_cfg,
             ):
                 # lease 갱신 (스트리밍이 길어질 때 만료 방지)
                 if global_token:
@@ -351,6 +384,9 @@ async def chat_stream(req: ChatRequest, request: Request):
                 log(
                     "chat_stream_done",
                     request_id=rid,
+                    variant=variant,
+                    model=variant_cfg.model,
+                    prompt=variant_cfg.prompt_name,
                     latency_ms=timer.ms(),
                     topic=final_evt.get("topic"),
                     used_tools=final_evt.get("used_tools", []),
@@ -361,6 +397,9 @@ async def chat_stream(req: ChatRequest, request: Request):
                 log(
                     "chat_stream_done_no_final",
                     request_id=rid,
+                    variant=variant,
+                    model=variant_cfg.model,
+                    prompt=variant_cfg.prompt_name,
                     latency_ms=timer.ms(),
                 )
 

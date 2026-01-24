@@ -9,6 +9,7 @@ from langchain.agents import create_agent
 from graph_mcp_workflow import mcp_messages_to_chat, router_prompt, router_llm
 from trace_store import TRACE_STORE
 from resilience import with_timeout, mcp_retry, MCP_TIMEOUT_SEC
+from experiments import REGISTRY, VariantConfig
 
 def _extract_tool_names(tool_calls: Any) -> List[str]:
     names: List[str] = []
@@ -32,12 +33,16 @@ async def run_agent_events(
     user_q: str,
     mcp_client,
     request: Optional[Request] = None,  # 스트리밍에서 disconnect 감지용
+    variant_cfg=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     통합 실행 코어: 이벤트(dict)를 순서대로 yield
     이벤트 타입 예:
         - start, route, stage, tool_call, tool_result, token, usage, final, done, cancelled, error
     """
+    if variant_cfg is None:
+        variant_cfg = REGISTRY["v1"]
+
     await TRACE_STORE.start(request_id)
     await TRACE_STORE.add(request_id, "start")
 
@@ -63,11 +68,14 @@ async def run_agent_events(
         return await with_timeout(
             mcp_client.get_prompt(
                 "docs",
-                "explain_concept",
+                variant_cfg.prompt_name,
                 arguments={"topic": route.upper(), "audience": "beginner"},
             ),
             MCP_TIMEOUT_SEC,
         )
+
+    await TRACE_STORE.add(request_id, "experiment", variant=variant_cfg.variant, model=variant_cfg.model, prompt=variant_cfg.prompt_name)
+    yield {"type": "stage", "request_id": request_id, "stage": "experiment_selected", "variant": variant_cfg.variant}
 
     # 2) MCP Prompt
     prompt_msgs = await _load_prompt()
@@ -108,8 +116,8 @@ async def run_agent_events(
 
     # 5) Streaming 가능한 LLM + usage 수집(가능한 경우)
     # llm = ChatOpenAI(
-    #     model="gpt-4o-mini",
-    #     temperature=0,
+    #     model=variant_cfg.model,
+    #     temperature=variant_cfg.temperature,
     #     streaming=True,
     #     stream_usage=True,
     # )

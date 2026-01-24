@@ -122,7 +122,7 @@ def _select_variant(request: Request) -> tuple[str, object]:
     헤더/롤아웃 비율로 variant 선택.
     반환: (variant_str, variant_cfg)
     """
-    explicit = request.headers.get("X-EXP_VARIANT") # v1 or v2
+    explicit = request.headers.get("X-EXP-VARIANT") # v1 or v2
     variant = choose_variant(explicit, ROLLOUT_V2_PCT)
     variant_cfg = REGISTRY[variant]
     return variant, variant_cfg

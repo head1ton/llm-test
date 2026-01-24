@@ -3,6 +3,7 @@ import asyncio
 import os
 import traceback
 import logging
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -24,6 +25,8 @@ from concurrency import GLOBAL_SEM, QUEUE_TIMEOUT_SEC
 from obs_log import log, estimate_cost_usd
 
 from experiments import choose_variant, REGISTRY
+from metrics import METRICS
+from rollout import ROLLOUT
 
 # from starlette.requests import Request
 # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -57,13 +60,15 @@ QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 �
 
 GLOBAL_LEASE_RENEW_SEC = os.getenv("GLOBAL_LEASE_RENEW_SEC", "20.0")
 
-ROLLOUT_V2_PCT = int(os.getenv("ROLLOUT_V2_PCT", "0"))
-
 VALIDATE_SSE = os.getenv("VALIDATE_SSE", "0") == "1"
 
 MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
 
 SSE_ADAPTER = TypeAdapter(SSEEvent)
+
+DEFAULT_ROLLOUT_V2_PCT = int(os.getenv("ROLLOUT_V2_PCT", "0"))
+
+EXPERIMENT_ID = os.getenv("EXPERIMENT_ID", "exp-main")
 
 # 전역으로 1번만 생성
 mcp_client_stream = MultiServerMCPClient(
@@ -117,15 +122,17 @@ async def readiness():
 
         return {"ok": False, "mcp_transport": "http", "error": details}
 
-def _select_variant(request: Request) -> tuple[str, object]:
+async def _select_variant(request: Request) -> tuple[str, object, str | None, int]:
     """
     헤더/롤아웃 비율로 variant 선택.
-    반환: (variant_str, variant_cfg)
+    반환: (variant_str, variant_cfg, user_id, rollout_pct)
     """
     explicit = request.headers.get("X-EXP-VARIANT") # v1 or v2
-    variant = choose_variant(explicit, ROLLOUT_V2_PCT)
+    user_id = request.headers.get("X-USER-ID")  # sticky key
+    rollout_pct = await ROLLOUT.get_v2_pct(DEFAULT_ROLLOUT_V2_PCT) # Redis 기반
+    variant = choose_variant(explicit, rollout_pct, user_id=user_id, experiment_id=EXPERIMENT_ID)
     variant_cfg = REGISTRY[variant]
-    return variant, variant_cfg
+    return variant, variant_cfg, user_id, rollout_pct
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
@@ -137,7 +144,7 @@ async def chat(req: ChatRequest, request: Request):
 
     user_q = req.messages[-1].content
 
-    variant, variant_cfg = _select_variant(request)
+    variant, variant_cfg, user_id, rollout_pct = await _select_variant(request)
 
     # 글로벌 토큰
     global_token = await GLOBAL_LIMITER.acquire(timeout_sec=QUEUE_TIMEOUT_SEC, lease_sec=180)
@@ -181,6 +188,9 @@ async def chat(req: ChatRequest, request: Request):
                     resource_text = e.data.get("text")
                     break
 
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        await METRICS.record(day=day, variant=variant, latency_ms=latency, cost_usd=cost, ok=True)
+
         log(
             "chat_done",
             request_id=rid,
@@ -218,7 +228,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     user_q = req.messages[-1].content
 
-    variant, variant_cfg = _select_variant(request)
+    variant, variant_cfg, user_id, rollout_pct = await _select_variant(request)
 
     async def sse(data: dict):
         if VALIDATE_SSE:
@@ -242,6 +252,10 @@ async def chat_stream(req: ChatRequest, request: Request):
         final_evt = None
         acquired = False
         global_token = None
+
+        ok_for_metrics = False
+        latency_ms_for_metrics = 0
+        cost_usd_for_metrics = 0.0
 
         try:
             # 시작 이벤트를 먼저 보내면 UX가 좋아짐
@@ -362,11 +376,22 @@ async def chat_stream(req: ChatRequest, request: Request):
                     final_evt = evt
                     evt["latency_ms"] = timer.ms()
 
+                    # metrics/log용 값 확정
+                    latency_ms_for_metrics = evt["latency_ms"]
+                    usage = evt.get("usage") or {}
+                    cost_usd_for_metrics = estimate_cost_usd(usage)
+                    ok_for_metrics = True
+
                 yield await sse(evt)
+
+            # final 이벤트가 없고 정상 종료된 경우도 실패로 본다.
+            if not ok_for_metrics:
+                latency_ms_for_metrics = timer.ms()
 
         except Exception as e:
             # 스트리밍 중 예외는 error 이벤트로 전달
             yield await sse({"type": "error", "request_id": rid, "message": str(e)})
+            latency_ms_for_metrics = timer.ms()
 
         finally:
             # 반드시 release (클라이언트 중단/예외 발생해도)
@@ -375,6 +400,20 @@ async def chat_stream(req: ChatRequest, request: Request):
 
             if global_token:
                 await GLOBAL_LIMITER.release(global_token)
+
+            # metrics 기록 (variant 별 집계)
+            try:
+                day = datetime.now(timezone.utc).strftime("%Y%m%d")
+                await METRICS.record(
+                    day=day,
+                    variant=variant,
+                    latency_ms=int(latency_ms_for_metrics or timer.ms()),
+                    cost_usd=float(cost_usd_for_metrics or 0.0),
+                    ok=bool(ok_for_metrics)
+                )
+            except Exception:
+                # metrics 실패가 본 요청에 영향 주지 않게
+                pass
 
             # 스트리밍도 운영 로그.
             if final_evt:
@@ -387,6 +426,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                     variant=variant,
                     model=variant_cfg.model,
                     prompt=variant_cfg.prompt_name,
+                    rollout_pct=rollout_pct,
+                    user_id_present=bool(user_id),
                     latency_ms=timer.ms(),
                     topic=final_evt.get("topic"),
                     used_tools=final_evt.get("used_tools", []),
@@ -400,6 +441,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                     variant=variant,
                     model=variant_cfg.model,
                     prompt=variant_cfg.prompt_name,
+                    rollout_pct=rollout_pct,
+                    user_id_preaent=bool(user_id),
                     latency_ms=timer.ms(),
                 )
 
@@ -418,3 +461,11 @@ async def get_trace(request_id: str):
             for e in tr.events
         ]
     }
+
+@app.get("/metrics/experiments")
+async def exp_metrics(day: str | None = None):
+    if not day:
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    v1 = await METRICS.snapshot(day, "v1")
+    v2 = await METRICS.snapshot(day, "v2")
+    return {"day": day, "v1": v1, "v2": v2}

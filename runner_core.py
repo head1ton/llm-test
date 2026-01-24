@@ -102,7 +102,7 @@ async def run_agent_events(
 
     await TRACE_STORE.add(request_id, "stage", stage="resource_loaded", uri=uri)
     await TRACE_STORE.add(request_id, "resource", uri=uri, text=resource_text[:4000])
-    yield {"type": "stage", "request_idi": request_id, "stage": "resource_loaded", "uri": uri}
+    yield {"type": "stage", "request_id": request_id, "stage": "resource_loaded", "uri": uri}
 
     @mcp_retry()
     async def _load_tools():

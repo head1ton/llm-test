@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import hashlib
 import os
 import random
 from dataclasses import dataclass
@@ -37,12 +39,29 @@ REGISTRY: Dict[Variant, VariantConfig] = {
     ),
 }
 
-def choose_variant(explicit: Optional[str], rollout_pct_v2: int) -> Variant:
+def _bucket_0_99(key: str) -> int:
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return int(h[:8], 16) % 100 # 0~99
+
+def choose_variant(
+    explicit: Optional[str],
+    rollout_pct_v2: int,
+    user_id: Optional[str] = None,
+    experiment_id: str = "exp-main",
+) -> Variant:
     """
-    explicit이 있으면 그대로, 없으면 rollout 비율로 v2 배정.
+    1) explicit 헤더가 있으면 그대로
+    2) user_id가 있으면 sticky bucketing
+    3) 없으면 랜덤 rollout
     """
     if explicit in ("v1", "v2"):
         return explicit # type: ignore
+
+    rollout_pct_v2 = max(0, min(100, int(rollout_pct_v2)))
+
+    if user_id:
+        b = _bucket_0_99(f"{experiment_id}:{user_id}")
+        return "v2" if b < rollout_pct_v2 else "v1"
 
     # rollout_pct_v2: 0 ~ 100
     r = random.randint(1, 100)

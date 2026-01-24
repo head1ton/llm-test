@@ -75,7 +75,7 @@ async def run_agent_events(
         )
 
     await TRACE_STORE.add(request_id, "experiment", variant=variant_cfg.variant, model=variant_cfg.model, prompt=variant_cfg.prompt_name)
-    yield {"type": "stage", "request_id": request_id, "stage": "experiment_selected", "variant": variant_cfg.variant}
+    yield {"type": "experiment", "request_id": request_id, "model": variant_cfg.model, "prompt": variant_cfg.prompt_name, "variant": variant_cfg.variant}
 
     # 2) MCP Prompt
     prompt_msgs = await _load_prompt()

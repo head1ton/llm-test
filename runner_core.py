@@ -38,8 +38,8 @@ async def run_agent_events(
     이벤트 타입 예:
         - start, route, stage, tool_call, tool_result, token, usage, final, done, cancelled, error
     """
-    TRACE_STORE.start(request_id)
-    TRACE_STORE.add(request_id, "start")
+    await TRACE_STORE.start(request_id)
+    await TRACE_STORE.add(request_id, "start")
 
     yield {"type": "start", "request_id": request_id}
 
@@ -48,12 +48,12 @@ async def run_agent_events(
     if route not in ("rag", "agent", "mcp", "clarify"):
         route = "clarify"
 
-    TRACE_STORE.add(request_id, "route", topic=route)
+    await TRACE_STORE.add(request_id, "route", topic=route)
     yield {"type": "route", "request_id": request_id, "topic": route}
 
     if route == "clarify":
         msg = "질문을 정확히 잡기 위해 한 가지만 물어볼께. RAG, Agent, MCP 중 어떤 주제를 설명해줄까?"
-        TRACE_STORE.add(request_id, "final", topic=route, answer=msg, used_tools=[])
+        await TRACE_STORE.add(request_id, "final", topic=route, answer=msg, used_tools=[])
         yield {"type": "final", "request_id": request_id, "topic": route, "answer": msg, "used_tools": []}
         yield {"type": "done", "request_id": request_id}
         return
@@ -73,7 +73,7 @@ async def run_agent_events(
     prompt_msgs = await _load_prompt()
 
     base_messages = mcp_messages_to_chat(prompt_msgs)
-    TRACE_STORE.add(request_id, "stage", stage="prompt_loaded")
+    await TRACE_STORE.add(request_id, "stage", stage="prompt_loaded")
     yield {"type": "stage", "request_id": request_id, "stage": "prompt_loaded"}
 
     @mcp_retry()
@@ -92,8 +92,8 @@ async def run_agent_events(
         blob = blobs[0]
         resource_text = blob.as_string() if hasattr(blob, "as_string") else str(blob)
 
-    TRACE_STORE.add(request_id, "stage", stage="resource_loaded", uri=uri)
-    TRACE_STORE.add(request_id, "resource", uri=uri, text=resource_text[:4000])
+    await TRACE_STORE.add(request_id, "stage", stage="resource_loaded", uri=uri)
+    await TRACE_STORE.add(request_id, "resource", uri=uri, text=resource_text[:4000])
     yield {"type": "stage", "request_idi": request_id, "stage": "resource_loaded", "uri": uri}
 
     @mcp_retry()
@@ -103,7 +103,7 @@ async def run_agent_events(
     # 4) MCP Tools 로드
     tools = await _load_tools()
 
-    TRACE_STORE.add(request_id, "stage", stage="tools_loaded", count=len(tools))
+    await TRACE_STORE.add(request_id, "stage", stage="tools_loaded", count=len(tools))
     yield {"type": "stage", "request_id": request_id, "stage": "tools_loaded", "count": len(tools)}
 
     # 5) Streaming 가능한 LLM + usage 수집(가능한 경우)
@@ -148,14 +148,14 @@ async def run_agent_events(
 
     async for update in agent.astream({"messages": messages}, stream_mode="updates"):
         if request is not None and await request.is_disconnected():
-            TRACE_STORE.add(request_id, "cancelled")
+            await TRACE_STORE.add(request_id, "cancelled")
             yield {"type": "cancelled", "request_id": request_id}
             return
 
         # update는 구현/버전별로 구조가 달라서 최대한 방어적으로 처리
         msgs = update.get("messages") if isinstance(update, dict) else None
         if not msgs:
-            TRACE_STORE.add(request_id, "update", raw=str(update)[:1000])
+            await TRACE_STORE.add(request_id, "update", raw=str(update)[:1000])
             yield {"type": "update", "request_id": request_id, "data": str(update)[:2000]}
             continue
 
@@ -173,7 +173,7 @@ async def run_agent_events(
                     if n not in used_tools:
                         used_tools.append(n)
 
-                TRACE_STORE.add(request_id, "tool_call", tool_calls=tool_calls, tool_names=names)
+                await TRACE_STORE.add(request_id, "tool_call", tool_calls=tool_calls, tool_names=names)
                 yield {"type": "tool_call", "request_id": request_id, "tool_calls": tool_calls, "tool_names": names}
                 continue
 
@@ -181,7 +181,7 @@ async def run_agent_events(
             m_type = getattr(m, "type", None) or m.__class__.__name__
             if "ToolMessage" in str(m_type):
                 content = getattr(m, "content", "") or ""
-                TRACE_STORE.add(request_id, "tool_result", content=content[:2000])
+                await TRACE_STORE.add(request_id, "tool_result", content=content[:2000])
                 yield {"type": "tool_result", "request_id": request_id, "content": content}
                 continue
 
@@ -189,21 +189,21 @@ async def run_agent_events(
             content = getattr(m, "content", None)
             if content:
                 final_parts.append(content)
-                TRACE_STORE.add(request_id, "token", token=content)
+                await TRACE_STORE.add(request_id, "token", token=content)
                 yield {"type": "token", "request_id": request_id, "token": content}
 
             # usage 감지 (가능한 경우)
             um = getattr(m, "usage_metadata", None)
             if um:
                 usage = um
-                TRACE_STORE.add(request_id, "usage", usage=usage)
+                await TRACE_STORE.add(request_id, "usage", usage=usage)
                 yield {"type": "usage", "request_id": request_id, "usage": usage}
 
     final_answer = "".join(final_parts).strip()
 
     if usage is None:
         # 1) Trace에서 usage 이벤트가 있었으면 그걸 사용
-        tr = TRACE_STORE.get(request_id)
+        tr = await TRACE_STORE.get(request_id)
         if tr:
             for ev in reversed(tr.events):
                 if ev.type == "usage":
@@ -220,12 +220,12 @@ async def run_agent_events(
             in_tok = len(enc.encode(approx_in_text))
             out_tok = sum(len(enc.encode(p)) for p in final_parts) if final_parts else 0
             usage = {"input_tokens": in_tok, "output_tokens": out_tok, "total_tokens": in_tok + out_tok}
-            TRACE_STORE.add(request_id, "usage", usage=usage, source="tiktoken_estimate")
+            await TRACE_STORE.add(request_id, "usage", usage=usage, source="tiktoken_estimate")
             yield {"type": "usage", "request_id": request_id, "usage": usage, "source": "tiktoken_estimate"}
         except Exception:
             usage = None
 
-    TRACE_STORE.add(
+    await TRACE_STORE.add(
         request_id,
         "final",
         topic=route,

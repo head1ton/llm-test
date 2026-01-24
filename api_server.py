@@ -150,7 +150,7 @@ async def chat(req: ChatRequest):
         cost = estimate_cost_usd(usage)
 
         # trace에서 resource_text 꺼냄
-        tr = TRACE_STORE.get(rid)
+        tr = await TRACE_STORE.get(rid)
         resource_text = None
         if tr:
             for e in tr.events:
@@ -359,8 +359,8 @@ async def chat_stream(req: ChatRequest, request: Request):
 
 
 @app.get("/trace/{request_id}")
-def get_trace(request_id: str):
-    tr = TRACE_STORE.get(request_id)
+async def get_trace(request_id: str):
+    tr = await TRACE_STORE.get(request_id)
     if not tr:
         return {"request_id": request_id, "events": []}
     return {

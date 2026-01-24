@@ -2,6 +2,7 @@ import json
 import asyncio
 import os
 import traceback
+import logging
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -25,13 +26,24 @@ from obs_log import log, estimate_cost_usd
 
 load_dotenv()
 
+# 로깅 설정 (uvicorn 로그와 통합)
+logger = logging.getLogger("uvicorn")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await GLOBAL_LIMITER.init_once()
+    # Startup: 서버 시작 시 실행
+    logger.info("LIFESPAN: Startup initiated. Initializing GLOBAL_LIMITER...")
+    try:
+        await GLOBAL_LIMITER.init_once()
+        logger.info("LIFESPAN: GLOBAL_LIMITER initialized successfully.")
+    except Exception as e:
+        logger.error(f"LIFESPAN: Failed to initialize GLOBAL_LIMITER: {e}")
+        traceback.print_exc()
+    
     yield
-    # Shutdown (필요 시 여기에 정리 코드 추가)
+    
+    # Shutdown: 서버 종료 시 실행
+    logger.info("LIFESPAN: Shutdown initiated.")
 
 app = FastAPI(title="LLM Agent Server (LangGraph + MCP)", lifespan=lifespan)
 
@@ -39,9 +51,7 @@ graph_app = build_graph()
 
 QUEUE_PING_SEC = 1.0    # queued 상태에서 heartbeat 간격 (차후 env로 빼자)
 
-GLOBAL_QUEUE_TIMEOUT = float(os.getenv("QUEUE_TIMEOUT_SEC", "10"))
-
-GLOBAL_LEASE_RENEW_SEC = float(os.getenv("GLOBAL_LEASE_RENEW_SEC", "20.0")) # lease_sec의 1/3~1/5 권장
+GLOBAL_LEASE_RENEW_SEC = os.getenv("GLOBAL_LEASE_RENEW_SEC", "20.0")
 
 MCP_URL = os.getenv("MCP_URL", "http://localhost:9000/mcp")  # http://mcp-docs:9000/mcp
 
@@ -107,15 +117,16 @@ async def chat(req: ChatRequest):
 
     user_q = req.messages[-1].content
 
-    # 글로벌 토큰 획득 (workers 전체 기준)
-    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=GLOBAL_QUEUE_TIMEOUT, lease_sec=180)
+    # 글로벌 토큰
+    global_token = await GLOBAL_LIMITER.acquire(timeout_sec=QUEUE_TIMEOUT_SEC, lease_sec=180)
     if not global_token:
         raise HTTPException(status_code=429, detail="Server busy (global queue timeout)")
 
-    # 큐/동시성 제어(프로세스 로컬 세마포어)
+    # 큐/동시성 제어 (프로세스 로컬 세마포어)
     try:
         await asyncio.wait_for(GLOBAL_SEM.acquire(), timeout=QUEUE_TIMEOUT_SEC)
     except asyncio.TimeoutError:
+        # 글로벌 토큰은 얻었지만 로컬이 막힌 경우 -> 반납
         await GLOBAL_LIMITER.release(global_token)
         raise HTTPException(status_code=429, detail="Server busy (queue timeout)")
 
@@ -188,30 +199,26 @@ async def chat_stream(req: ChatRequest, request: Request):
         세마포어 즉시 획득 시 queued 없이 진행.
         아니면 queued 이벤트를 보내고 QUEUE_TIMEOUT_SEC 동안 대기
         """
-        # 1) 즉시 획득 시도
         try:
             GLOBAL_SEM.acquire_nowait()
-            return {"queued": False, "waited_ms": 0}
+            return {"queued": False, "start": None}
         except Exception:
-            pass
-
-        # 2) queued 상태
-        start = asyncio.get_event_loop().time()
-        waited_ms = 0
-        return {"queued": True, "start": start, "waited_ms": waited_ms}
+            start = asyncio.get_event_loop().time()
+            return {"queued": True, "start": start}
 
     async def event_gen():
         final_evt = None
-        global_token = None
         acquired = False
+        global_token = None
 
         try:
             # 시작 이벤트를 먼저 보내면 UX가 좋아짐
             yield await sse({"type": "start", "request_id": rid})
 
-            # global limiter (redis)
+            # Global_LIMITER (Redis) 먼저 획득
             start = asyncio.get_event_loop().time()
             global_token = await GLOBAL_LIMITER.acquire(timeout_sec=0.0)
+            last_renew = asyncio.get_event_loop().time()
 
             if global_token:
                 yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": 0})
@@ -232,21 +239,31 @@ async def chat_stream(req: ChatRequest, request: Request):
                     waited = now - start
 
                     if waited >= QUEUE_TIMEOUT_SEC:
-                        yield await sse({"type": "error", "request_id": rid, "message": "Server busy (global queue timeout)"})
+                        yield await sse({
+                            "type": "error",
+                            "request_id": rid,
+                            "message": "Server busy (global queue timeout)"
+                        })
                         return
 
                     if (now - last_ping) >= QUEUE_PING_SEC:
-                        yield await sse({"type": "queued_ping_global", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        yield await sse({
+                            "type": "queued_ping_global",
+                            "request_id": rid,
+                            "waited_ms": int(waited * 1000)
+                        })
                         last_ping = now
 
                     global_token = await GLOBAL_LIMITER.acquire(timeout_sec=0.2)
                     if global_token:
-                        yield await sse({"type": "dequeued_global", "request_id": rid, "waited_ms": int(waited * 1000)})
+                        yield await sse({
+                            "type": "dequeued_global",
+                            "request_id": rid,
+                            "waited_ms": int(waited * 1000)
+                        })
                         break
 
-            last_renew = asyncio.get_event_loop().time()
-
-            # 큐/동시성 제어(프로세스 로컬 세마포어)
+            # LOCAL 세마포어
             qstate = await acquire_with_queue_events()
 
             if not qstate["queued"]:
@@ -261,13 +278,13 @@ async def chat_stream(req: ChatRequest, request: Request):
 
                 while True:
                     if await request.is_disconnected():
-                        yield await sse({"type": "cancelled", "request_id": rid, "reason": "client_disconnected_in_queue"})
+                        yield await sse({"type": "cancelled", "request_id": rid, "reason": "client_disconnected_in_local_queue"})
                         return
 
                     now = asyncio.get_event_loop().time()
                     waited = now - start
                     if waited >= QUEUE_TIMEOUT_SEC:
-                        yield await sse({"type": "error", "request_id": rid, "message": "Server busy (queue timeout)"})
+                        yield await sse({"type": "error", "request_id": rid, "message": "Server busy (local queue timeout)"})
                         return
 
                     # 주기적으로 queued_ping 전송 (프론트 UX용)
@@ -284,7 +301,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     except asyncio.TimeoutError:
                         continue
 
-            # 실제 Agent 실행
+            # agent 실행
             async for evt in run_agent_events(
                 request_id=rid,
                 user_q=user_q,
@@ -294,7 +311,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 # lease 갱신 (스트리밍이 길어질 때 만료 방지)
                 if global_token:
                     now = asyncio.get_event_loop().time()
-                    if (now - last_renew) >= GLOBAL_LEASE_RENEW_SEC:
+                    if (now - last_renew) >= float(GLOBAL_LEASE_RENEW_SEC):
                         await GLOBAL_LIMITER.renew(global_token)
                         last_renew = now
 
@@ -313,6 +330,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             # 반드시 release (클라이언트 중단/예외 발생해도)
             if acquired:
                 GLOBAL_SEM.release()
+
             if global_token:
                 await GLOBAL_LIMITER.release(global_token)
 

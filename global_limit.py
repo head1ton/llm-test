@@ -81,7 +81,11 @@ class GlobalLimiter:
     async def init_once(self):
         # list 채우기 같은 초기화가 필요 없는 구조.
         # 단, 키가 없을 때도 그냥 동작한다.
+        # ZSET 기반이므로 별도의 초기화가 필요 없음.
+        # 하지만 키가 없으면 redis-cli에서 안 보일 수 있으므로,
+        # 명시적으로 키가 존재하는지 체크하거나 로그를 남길 수 있음.
         return
+        # pass
 
     async def _redis_time_epoch(self) -> int:
         """

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # 공통 베이스
 class SSEBase(BaseModel):
+    model_config = ConfigDict(extra="allow")
     type: str
     request_id: str
 
@@ -93,10 +94,15 @@ class ExperimentEvent(SSEBase):
     model: str
     prompt: str
 
+class UpdateEvent(SSEBase):
+    type: Literal["update"] = "update"
+    data: Any | None = None
+
 # Union 타입: 서버/테스트에서 검증할 때 사용
 SSEEvent = Union[
     StartEvent,
     ExperimentEvent,
+    UpdateEvent,
     QueuedGlobalEvent, QueuedPingGlobalEvent, DequeuedGlobalEvent,
     QueuedLocalEvent, QueuedPingLocalEvent, DequeuedLocalEvent,
     RouteEvent, StageEvent,
